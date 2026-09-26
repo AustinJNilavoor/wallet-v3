@@ -1,10 +1,10 @@
-import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'package:wallet/core/app_colors.dart';
 import 'package:wallet/core/boxes.dart';
 import 'package:wallet/core/category_icons.dart';
 import 'package:wallet/data/models/category.dart';
+import 'package:wallet/presentation/widgets/value_listenable_builder2.dart';
 
 class AddCategoryScreen extends StatefulWidget {
   final Category? editCategory;
@@ -315,24 +315,4 @@ class _AddCategoryScreenState extends State<AddCategoryScreen> {
 }
 
 /// 🔧 Helper for listening to two Notifiers
-class ValueListenableBuilder2<A, B> extends StatelessWidget {
-  final ValueListenable<A> first;
-  final ValueListenable<B> second;
-  final Widget Function(BuildContext context, A a, B b, Widget? child) builder;
 
-  const ValueListenableBuilder2({
-    super.key,
-    required this.first,
-    required this.second,
-    required this.builder,
-  });
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder<A>(
-    valueListenable: first,
-    builder: (context, a, _) => ValueListenableBuilder<B>(
-      valueListenable: second,
-      builder: (context, b, _) => builder(context, a, b, null),
-    ),
-  );
-}

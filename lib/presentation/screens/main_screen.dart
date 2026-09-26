@@ -4,6 +4,7 @@ import 'package:wallet/presentation/screens/history_screen.dart';
 import 'package:wallet/presentation/screens/input_screen.dart';
 import 'package:wallet/presentation/screens/reports_screen.dart';
 import 'package:wallet/presentation/screens/settings_screen.dart';
+import 'package:wallet/services/sms/sms_sync_service.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -17,10 +18,28 @@ class _MainScreenState extends State<MainScreen> {
 
   late PageController _pageController;
 
+  // SMS sync service
+  final SmsSyncService _smsSyncService = SmsSyncService();
+
+  bool _isSmsSyncing = false;
+
+  final List<Widget> _pages = const [
+    DashboardScreen(),
+    HistoryScreen(),
+    ReportsScreen(),
+    SettingsScreen(),
+  ];
+
   @override
   void initState() {
     super.initState();
+
     _pageController = PageController();
+
+    // Start SMS synchronization after the screen is loaded.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncSms();
+    });
   }
 
   @override
@@ -29,12 +48,42 @@ class _MainScreenState extends State<MainScreen> {
     super.dispose();
   }
 
-  final List<Widget> _pages = const [
-    DashboardScreen(),
-    HistoryScreen(),
-    ReportsScreen(),
-    SettingsScreen(),
-  ];
+  /// Reads and processes SMS messages.
+  ///
+  /// This runs only when MainScreen is created/opened.
+  /// It does not run while the application is closed.
+  Future<void> _syncSms() async {
+    if (_isSmsSyncing) {
+      return;
+    }
+
+    _isSmsSyncing = true;
+
+    try {
+      final result = await _smsSyncService.sync();
+
+      debugPrint(
+        'SMS Sync completed: '
+        'successful=${result.successful}, '
+        'scanned=${result.scanned}, '
+        'imported=${result.imported}, '
+        'duplicates=${result.duplicates}, '
+        'unmatched=${result.unmatched}, '
+        'parsingFailed=${result.parsingFailed}',
+      );
+
+      if (!result.successful) {
+        debugPrint(
+          'SMS Sync failed: ${result.error}',
+        );
+      }
+    } catch (e, stackTrace) {
+      debugPrint('SMS Sync error: $e');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      _isSmsSyncing = false;
+    }
+  }
 
   void _onTabTapped(int index) {
     _pageController.jumpToPage(index);
@@ -53,23 +102,23 @@ class _MainScreenState extends State<MainScreen> {
   void _onAddTransaction() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const InputScreen()),
+      MaterialPageRoute(
+        builder: (context) => const InputScreen(),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _currentIndex == 0, // Only allow system pop if on Dashboard
+      canPop: _currentIndex == 0,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return; // If the system already handled it, do nothing
+        if (didPop) return;
 
-        // If not on Dashboard, switch back to index 0
         if (_currentIndex != 0) {
           _onTabTapped(0);
         }
       },
-
       child: Scaffold(
         body: PageView(
           controller: _pageController,
@@ -105,7 +154,9 @@ class _MainScreenState extends State<MainScreen> {
           onPressed: _onAddTransaction,
           child: const Icon(Icons.add),
         ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+
+        floatingActionButtonLocation:
+            FloatingActionButtonLocation.centerDocked,
       ),
     );
   }

@@ -17,6 +17,7 @@ class ReportsScreen extends StatefulWidget {
 
 class _ReportsScreenState extends State<ReportsScreen> {
   ReportFilter _selectedFilter = ReportFilter.month;
+  bool _isBalanceHidden = true;
   final format = NumberFormat('##,##,##0.00');
   double _calculateTotalDebt() {
     final sourceBox = Boxes.getSources();
@@ -51,26 +52,37 @@ class _ReportsScreenState extends State<ReportsScreen> {
             child: ValueListenableBuilder<Box<Transaction>>(
               valueListenable: Boxes.getTransactions().listenable(),
               builder: (context, box, _) {
-                final transactions = _filterTransactions(box.values.toList());
-
-                if (transactions.isEmpty) return _buildEmptyState();
+                final allTransactions = box.values.toList();
+                final transactions = _filterTransactions(allTransactions);
 
                 return SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildSectionTitle("Spend Trend"),
-                      _buildLineChartCard(transactions),
+                      if (transactions.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 32),
+                          child: Center(
+                            child: Text("No transactions in this period"),
+                          ),
+                        ),
+                      if (transactions.isNotEmpty) ...[
+                        _buildSectionTitle("Spend Trend"),
+                        _buildLineChartCard(transactions),
+                        const SizedBox(height: 32),
+                        _buildSectionTitle("Category Breakdown"),
+                        _buildCategoryPieCard(transactions),
+                        const SizedBox(height: 32),
+                        _buildSectionTitle("Income Sources"),
+                        _buildIncomeSourceList(transactions),
+                        const SizedBox(height: 32),
+                        _buildSectionTitle("Current Liabilities"),
+                        _buildDebtCard(),
+                      ],
                       const SizedBox(height: 32),
-                      _buildSectionTitle("Category Breakdown"),
-                      _buildCategoryPieCard(transactions),
-                      const SizedBox(height: 32),
-                      _buildSectionTitle("Income Sources"),
-                      _buildIncomeSourceList(transactions),
-                      const SizedBox(height: 32),
-                      _buildSectionTitle("Current Liabilities"),
-                      _buildDebtCard(),
+                      _buildSectionTitle("Balance History"),
+                      _buildBalanceChartCard(allTransactions),
                       const SizedBox(height: 100),
                     ],
                   ),
@@ -144,7 +156,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                             ),
                             if (source.creditLimit != null)
                               Text(
-                                "Limit: ₹${format.format(source.creditLimit)}",
+                                "Limit: ₹${format.format(source.creditLimit ?? 0)}",
                                 style: const TextStyle(
                                   fontSize: 10,
                                   color: Colors.grey,
@@ -169,39 +181,260 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   // 🔥 FILTER
   List<Transaction> _filterTransactions(List<Transaction> all) {
-    final now = DateTime.now();
-    DateTime start;
-    DateTime end = DateTime(now.year, now.month, now.day, 23, 59, 59);
-
-    switch (_selectedFilter) {
-      case ReportFilter.today:
-        start = DateTime(
-          now.year,
-          now.month,
-          now.subtract(const Duration(seconds: 1)).day,
-        );
-        break;
-      case ReportFilter.week:
-        start = now.subtract(Duration(days: now.weekday));
-        break;
-      case ReportFilter.month:
-        start = DateTime(now.year, now.month, 1);
-        break;
-      case ReportFilter.custom:
-        start = _customRange.start.subtract(const Duration(seconds: 1));
-        end = _customRange.end;
-        break;
-    }
+    final start = _getReportStartDate();
+    final end = _getReportEndDate();
 
     return all
         .where(
           (tx) =>
-              tx.createdDate.isAfter(
-                start.subtract(const Duration(seconds: 1)),
-              ) &&
-              tx.createdDate.isBefore(end.add(const Duration(days: 1))),
+              !tx.createdDate.isBefore(start) && !tx.createdDate.isAfter(end),
         )
         .toList();
+  }
+
+  DateTime _getReportStartDate() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    switch (_selectedFilter) {
+      case ReportFilter.today:
+        return today;
+      case ReportFilter.week:
+        return today.subtract(Duration(days: today.weekday - 1));
+      case ReportFilter.month:
+        return DateTime(now.year, now.month, 1);
+      case ReportFilter.custom:
+        return DateTime(
+          _customRange.start.year,
+          _customRange.start.month,
+          _customRange.start.day,
+        );
+    }
+  }
+
+  DateTime _getReportEndDate() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    switch (_selectedFilter) {
+      case ReportFilter.today:
+        return today
+            .add(const Duration(days: 1))
+            .subtract(const Duration(milliseconds: 1));
+      case ReportFilter.week:
+        final start = today.subtract(Duration(days: today.weekday - 1));
+        return start
+            .add(const Duration(days: 7))
+            .subtract(const Duration(milliseconds: 1));
+      case ReportFilter.month:
+        return DateTime(
+          now.year,
+          now.month + 1,
+          1,
+        ).subtract(const Duration(milliseconds: 1));
+      case ReportFilter.custom:
+        return DateTime(
+          _customRange.end.year,
+          _customRange.end.month,
+          _customRange.end.day,
+          23,
+          59,
+          59,
+          999,
+        );
+    }
+  }
+
+  double _calculateCurrentBalance() {
+    return Boxes.getSources().values.fold(
+      0.0,
+      (sum, source) => sum + source.balance,
+    );
+  }
+
+  List<FlSpot> _generateBalanceHistory(List<Transaction> allTransactions) {
+    final startDate = _getReportStartDate();
+    final endDate = _getReportEndDate();
+    var balance = _calculateCurrentBalance();
+
+    for (final transaction in allTransactions) {
+      if (!transaction.createdDate.isBefore(startDate)) {
+        if (transaction.type == TransactionType.income) {
+          balance -= transaction.amount;
+        } else if (transaction.type == TransactionType.expense) {
+          balance += transaction.amount;
+        }
+      }
+    }
+
+    final dailyChanges = <DateTime, double>{};
+    for (final transaction in allTransactions) {
+      if (transaction.createdDate.isBefore(startDate) ||
+          transaction.createdDate.isAfter(endDate)) {
+        continue;
+      }
+
+      final date = DateTime(
+        transaction.createdDate.year,
+        transaction.createdDate.month,
+        transaction.createdDate.day,
+      );
+      final change = switch (transaction.type) {
+        TransactionType.income => transaction.amount,
+        TransactionType.expense => -transaction.amount,
+        TransactionType.transfer => 0.0,
+      };
+      dailyChanges[date] = (dailyChanges[date] ?? 0) + change;
+    }
+
+    final spots = <FlSpot>[];
+    var currentDate = DateTime(startDate.year, startDate.month, startDate.day);
+    var index = 0;
+    while (!currentDate.isAfter(endDate)) {
+      balance += dailyChanges[currentDate] ?? 0;
+      spots.add(FlSpot(index.toDouble(), balance));
+      currentDate = currentDate.add(const Duration(days: 1));
+      index++;
+    }
+    return spots;
+  }
+
+  Widget _buildBalanceChartCard(List<Transaction> allTransactions) {
+    final spots = _generateBalanceHistory(allTransactions);
+    final values = spots.map((spot) => spot.y).toList();
+    final minValue = values.reduce((a, b) => a < b ? a : b);
+    final maxValue = values.reduce((a, b) => a > b ? a : b);
+    final padding = (maxValue - minValue).abs() * 0.15;
+    final chartPadding = padding == 0 ? 1.0 : padding;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: _cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 170,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Total Balance",
+                      style: TextStyle(color: Colors.grey[600]),
+                    ),
+                    Text(
+                      _isBalanceHidden
+                          ? "....."
+                          : "₹${format.format(values.last)}",
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              SizedBox(
+                width: 40,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  tooltip: _isBalanceHidden ? "Show balance" : "Hide balance",
+                  onPressed: () {
+                    setState(() => _isBalanceHidden = !_isBalanceHidden);
+                  },
+                  icon: Icon(
+                    _isBalanceHidden
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 180,
+            child: Stack(
+              children: [
+                LineChart(
+                  LineChartData(
+                    minY: minValue - chartPadding,
+                    maxY: maxValue + chartPadding,
+                    minX: 0,
+                    maxX: spots.length > 1 ? (spots.length - 1).toDouble() : 1,
+                    gridData: FlGridData(show: true),
+                    titlesData: const FlTitlesData(show: false),
+                    borderData: FlBorderData(show: false),
+                    lineTouchData: LineTouchData(
+                      touchTooltipData: LineTouchTooltipData(
+                        getTooltipItems: (touchedSpots) {
+                          return touchedSpots.map((touchedSpot) {
+                            final date = _getReportStartDate().add(
+                              Duration(days: touchedSpot.x.round()),
+                            );
+                            final amount = _isBalanceHidden
+                                ? "....."
+                                : "₹${format.format(touchedSpot.y)}";
+                            return LineTooltipItem(
+                              "$amount\n${DateFormat('dd MMM yyyy').format(date)}",
+                              const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          }).toList();
+                        },
+                      ),
+                    ),
+                    lineBarsData: [
+                      LineChartBarData(
+                        spots: spots,
+                        isCurved: true,
+                        color: Colors.green,
+                        barWidth: 3,
+                        dotData: const FlDotData(show: false),
+                        belowBarData: BarAreaData(
+                          show: true,
+                          color: Colors.green.withValues(alpha: 0.1),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_isBalanceHidden)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.78),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.visibility_off_outlined, size: 18),
+                              SizedBox(width: 8),
+                              Text(
+                                "Balance hidden",
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // 🔥 GRAPH FIXED HERE
@@ -405,8 +638,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
       Text("₹${format.format(v)}"),
     ],
   );
-
-  Widget _buildEmptyState() => const Center(child: Text("No data"));
 
   // --- 🎨 UI: Filter Row ---
   Widget _buildFilterChips() {

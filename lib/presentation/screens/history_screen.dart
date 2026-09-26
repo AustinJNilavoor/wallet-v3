@@ -9,6 +9,7 @@ import 'package:wallet/data/models/transaction.dart';
 import 'package:wallet/data/models/transaction_type.dart';
 import 'package:wallet/presentation/screens/input_screen.dart';
 import 'package:wallet/presentation/widgets/delete_dialog.dart';
+import 'package:wallet/services/transaction/transaction_service.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -20,6 +21,7 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   DateTime _selectedDate = DateTime.now();
   final format = NumberFormat('##,##,##0.00');
+  final TransactionService _transactionService = TransactionService();
 
   void _changeMonth(int value) {
     setState(() {
@@ -28,34 +30,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _handleDelete(Transaction tx) async {
-    final sourceBox = Boxes.getSources();
-
-    // 1. Revert the Primary Source balance
-    final source = sourceBox.get(tx.source.id);
-    if (source != null) {
-      if (tx.type == TransactionType.expense ||
-          tx.type == TransactionType.transfer) {
-        // If we spent or transferred out, give the money back
-        source.balance += tx.amount;
-      } else if (tx.type == TransactionType.income) {
-        // If it was income, take it away
-        source.balance -= tx.amount;
-      }
-      await source.save();
+    try {
+      await _transactionService.deleteAndRevert(tx);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to delete transaction')));
     }
-
-    // 2. Revert the Destination Source balance (if it was a Transfer)
-    if (tx.type == TransactionType.transfer && tx.destinationSource != null) {
-      final destSource = sourceBox.get(tx.destinationSource!.id);
-      if (destSource != null) {
-        // Because a transfer added money to the destination, we must subtract it now
-        destSource.balance -= tx.amount;
-        await destSource.save();
-      }
-    }
-
-    // 3. Finally, delete the transaction record
-    await tx.delete();
   }
 
   @override
@@ -311,18 +293,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         tx.source.name,
                         style: TextStyle(color: Colors.grey[600], fontSize: 14),
                       ),
-                      if (isTransfer) ...[
+                      if (isTransfer && tx.destinationSource != null) ...[
                         Icon(
                           Icons.arrow_right_alt,
                           size: 14,
                           color: Colors.grey[400],
                         ),
                         Icon(
-                        SourceIcons.icons[tx.destinationSource!.iconIndex],
-                        size: 14,
-                        color: Colors.grey[600],
-                      ),
-                      const SizedBox(width: 4),
+                          SourceIcons.icons[tx.destinationSource!.iconIndex],
+                          size: 14,
+                          color: Colors.grey[600],
+                        ),
+                        const SizedBox(width: 4),
                         Text(
                           tx.destinationSource!.name,
                           style: TextStyle(
@@ -333,11 +315,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       ],
                     ],
                   ),
-                  if (tx.note != null && tx.note!.isNotEmpty)
+                  if (tx.note.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        tx.note!,
+                        tx.note,
                         style: TextStyle(
                           color: Colors.grey[400],
                           fontSize: 13,

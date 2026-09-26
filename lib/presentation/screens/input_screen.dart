@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 import 'package:wallet/core/boxes.dart';
 import 'package:wallet/core/category_icons.dart';
@@ -14,6 +13,7 @@ import 'package:wallet/presentation/screens/add_source_screen.dart';
 import 'package:wallet/presentation/widgets/amount_feild.dart';
 import 'package:wallet/presentation/widgets/type_selector.dart';
 import 'package:wallet/presentation/widgets/universal_grid_selector.dart';
+import 'package:wallet/services/transaction/transaction_service.dart';
 
 class InputScreen extends StatefulWidget {
   final Transaction? editTransaction;
@@ -27,6 +27,8 @@ class InputScreen extends StatefulWidget {
 class _InputScreenState extends State<InputScreen> {
   final formKey = GlobalKey<FormState>();
   final DateFormat _dateFormat = DateFormat('EEE, dd MMM yyyy');
+  final TransactionService _transactionService = TransactionService();
+  bool _isSaving = false;
 
   late TextEditingController amountController;
   late TextEditingController notesController;
@@ -82,9 +84,9 @@ class _InputScreenState extends State<InputScreen> {
     }
   }
 
-  void _saveTransaction() {
+  Future<void> _saveTransaction() async {
     if (!formKey.currentState!.validate()) return;
-    final now = DateTime.now();
+    if (_isSaving) return;
 
     // Calculate total amount from potential comma-separated entries
     final double amount = amountController.text
@@ -92,128 +94,71 @@ class _InputScreenState extends State<InputScreen> {
         .map((e) => double.tryParse(e.trim()) ?? 0)
         .fold(0, (a, b) => a + b);
 
+    if (amount <= 0) {
+      _showSnackBar("Enter a valid amount");
+      return;
+    }
+
     final String note = notesController.text.trim();
 
-    // 1. REVERT OLD BALANCE FIRST (If Editing)
-    // We must undo the old transaction's impact before applying the new one.
-    if (isEditing && widget.editTransaction != null) {
-      _revertOldBalance(widget.editTransaction!);
-    }
+    setState(() => _isSaving = true);
 
-    // 2. APPLY NEW TRANSACTION LOGIC
-    if (selectedType == TransactionType.transfer) {
-      if (selectedSource == null || transferDestSource == null) {
-        _showSnackBar("Select both sources");
-        return;
+    try {
+      // 1. REVERT OLD BALANCE FIRST (If Editing)
+      // We must undo the old transaction's impact before applying the new one.
+      if (isEditing && widget.editTransaction != null) {
+        await _transactionService.revert(widget.editTransaction!);
       }
 
-      if (selectedSource!.id == transferDestSource!.id) {
-        _showSnackBar("Cannot transfer to same source");
-        return;
-      }
+      // 2. APPLY NEW TRANSACTION LOGIC
+      if (selectedType == TransactionType.transfer) {
+        if (selectedSource == null || transferDestSource == null) {
+          _showSnackBar("Select both sources");
+          return;
+        }
 
-      final tx = Transaction(
-        id: isEditing ? widget.editTransaction!.id : const Uuid().v4(),
-        amount: amount,
-        createdDate: selectedDate,
-        note: note,
-        category: Category(
-          id: 'transfer',
-          name: 'Transfer',
-          iconIndex: 0,
-          colorValue: Colors.blue.toARGB32(),
-        ),
-        source: selectedSource!,
-        destinationSource: transferDestSource!,
-        type: TransactionType.transfer,
-      );
+        if (selectedSource!.id == transferDestSource!.id) {
+          _showSnackBar("Cannot transfer to same source");
+          return;
+        }
 
-      // Update balances for both accounts in a transfer
-
-      final sourceBox = Boxes.getSources();
-
-      final from = sourceBox.get(selectedSource!.id);
-      final to = sourceBox.get(transferDestSource!.id);
-
-      if (from == null || to == null) return;
-
-      from.balance -= amount;
-      to.balance += amount;
-
-      from.lastUpdated = now;
-      to.lastUpdated = now;
-
-      from.save();
-      to.save();
-      Boxes.getTransactions().put(tx.id, tx);
-    } else {
-      // NORMAL TRANSACTION (Income or Expense)
-      if (selectedCategory == null || selectedSource == null) {
-        _showSnackBar("Select category & source");
-        return;
-      }
-
-      final tx = Transaction(
-        id: isEditing ? widget.editTransaction!.id : const Uuid().v4(),
-        amount: amount,
-        createdDate: selectedDate,
-        note: note,
-        category: selectedCategory!,
-        source: selectedSource!,
-        type: selectedType,
-      );
-
-      final sourceBox = Boxes.getSources();
-      final source = sourceBox.get(selectedSource!.id);
-
-if (source == null) {
-  _showSnackBar("Source not found");
-  return;
-}
-      if (selectedType == TransactionType.income) {
-        source.balance += amount;
+        await _transactionService.createTransfer(
+          id: isEditing ? widget.editTransaction!.id : null,
+          amount: amount,
+          date: selectedDate,
+          note: note,
+          fromSourceId: selectedSource!.id,
+          toSourceId: transferDestSource!.id,
+        );
       } else {
-        source.balance -= amount;
+        // NORMAL TRANSACTION (Income or Expense)
+        if (selectedCategory == null || selectedSource == null) {
+          _showSnackBar("Select category & source");
+          return;
+        }
+
+        await _transactionService.createSimpleTransaction(
+          id: isEditing ? widget.editTransaction!.id : null,
+          amount: amount,
+          date: selectedDate,
+          note: note,
+          category: selectedCategory!,
+          sourceId: selectedSource!.id,
+          type: selectedType,
+        );
       }
 
-      source.lastUpdated = now;
-      source.save();
-      Boxes.getTransactions().put(tx.id, tx);
-    }
-
-    _showSnackBar(isEditing ? "Transaction Updated!" : "Transaction Saved!");
-    Navigator.pop(context);
-  }
-
-  void _revertOldBalance(Transaction oldTx) {
-    final sourceBox = Boxes.getSources();
-    final now = DateTime.now();
-
-    // Fetch fresh instances to ensure we aren't using stale memory references.
-    final source = sourceBox.get(oldTx.source.id);
-    if (source == null) return;
-
-    if (oldTx.type == TransactionType.transfer) {
-      final dest = sourceBox.get(oldTx.destinationSource?.id);
-      if (dest == null) return;
-
-      // Undo the transfer: Add back to sender, subtract from receiver.
-      source.balance += oldTx.amount;
-      dest.balance -= oldTx.amount;
-
-      source.lastUpdated = now;
-      dest.lastUpdated = now;
-      source.save();
-      dest.save();
-    } else {
-      // Undo normal transaction
-      if (oldTx.type == TransactionType.income) {
-        source.balance -= oldTx.amount;
-      } else {
-        source.balance += oldTx.amount;
+      if (!mounted) return;
+      _showSnackBar(isEditing ? "Transaction Updated!" : "Transaction Saved!");
+      Navigator.pop(context);
+    } on TransactionServiceException catch (e) {
+      _showSnackBar(e.message);
+    } catch (e) {
+      _showSnackBar("Failed to save transaction");
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
       }
-      source.lastUpdated = now;
-      source.save();
     }
   }
 
@@ -231,8 +176,14 @@ if (source == null) {
         centerTitle: true,
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _saveTransaction,
-        icon: const Icon(Icons.check),
+        onPressed: _isSaving ? null : _saveTransaction,
+        icon: _isSaving
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.check),
         label: Text(isEditing ? "Update" : "Save"),
       ),
       body: GestureDetector(
