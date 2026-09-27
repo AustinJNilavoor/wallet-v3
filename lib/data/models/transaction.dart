@@ -31,6 +31,9 @@ class Transaction extends HiveObject {
   @HiveField(7)
   Source? destinationSource; 
 
+  @HiveField(8)
+String? smsHash;
+
   Transaction({
     required this.id,
     required this.amount,
@@ -40,5 +43,6 @@ class Transaction extends HiveObject {
     required this.source,
     required this.type,
     this.destinationSource,
+    this.smsHash,
   });
 }

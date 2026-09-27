@@ -25,13 +25,14 @@ class TransactionAdapter extends TypeAdapter<Transaction> {
       source: fields[5] as Source,
       type: fields[6] as TransactionType,
       destinationSource: fields[7] as Source?,
+      smsHash: fields[8] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Transaction obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(9)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -47,7 +48,9 @@ class TransactionAdapter extends TypeAdapter<Transaction> {
       ..writeByte(6)
       ..write(obj.type)
       ..writeByte(7)
-      ..write(obj.destinationSource);
+      ..write(obj.destinationSource)
+      ..writeByte(8)
+      ..write(obj.smsHash);
   }
 
   @override

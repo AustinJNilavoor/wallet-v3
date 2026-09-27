@@ -1,5 +1,7 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:wallet/data/models/category.dart';
+import 'package:wallet/data/models/sms_mapping.dart';
+import 'package:wallet/data/models/sms_sync_state.dart';
 import 'package:wallet/data/models/source.dart';
 import 'package:wallet/data/models/transaction.dart';
 
@@ -10,4 +12,11 @@ class Boxes {
   static Box<Category> getCategories() => Hive.box<Category>('categories');
 
   static Box<Source> getSources() => Hive.box<Source>('sources');
+
+  static Box<SmsSyncState> getSmsSyncState() =>
+      Hive.box<SmsSyncState>('smsSyncState');
+
+  static Box<SmsMapping> getSmsMappings() {
+    return Hive.box<SmsMapping>('smsMappings');
+  }
 }

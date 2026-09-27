@@ -16,9 +16,14 @@ import 'package:wallet/presentation/widgets/type_selector.dart';
 import 'package:wallet/presentation/widgets/universal_grid_selector.dart';
 
 class InputScreen extends StatefulWidget {
+  final bool isSmsTransaction;
   final Transaction? editTransaction;
 
-  const InputScreen({super.key, this.editTransaction});
+  const InputScreen({
+    super.key,
+    this.editTransaction,
+    this.isSmsTransaction = false,
+  });
 
   @override
   State<InputScreen> createState() => _InputScreenState();
@@ -96,7 +101,9 @@ class _InputScreenState extends State<InputScreen> {
 
     // 1. REVERT OLD BALANCE FIRST (If Editing)
     // We must undo the old transaction's impact before applying the new one.
-    if (isEditing && widget.editTransaction != null) {
+    if (isEditing &&
+        widget.editTransaction != null &&
+        !widget.isSmsTransaction) {
       _revertOldBalance(widget.editTransaction!);
     }
 
@@ -126,6 +133,7 @@ class _InputScreenState extends State<InputScreen> {
         source: selectedSource!,
         destinationSource: transferDestSource!,
         type: TransactionType.transfer,
+        smsHash: widget.isSmsTransaction ? widget.editTransaction?.smsHash : null,
       );
 
       // Update balances for both accounts in a transfer
@@ -161,15 +169,16 @@ class _InputScreenState extends State<InputScreen> {
         category: selectedCategory!,
         source: selectedSource!,
         type: selectedType,
+        smsHash: widget.isSmsTransaction ? widget.editTransaction?.smsHash : null,
       );
 
       final sourceBox = Boxes.getSources();
       final source = sourceBox.get(selectedSource!.id);
 
-if (source == null) {
-  _showSnackBar("Source not found");
-  return;
-}
+      if (source == null) {
+        _showSnackBar("Source not found");
+        return;
+      }
       if (selectedType == TransactionType.income) {
         source.balance += amount;
       } else {
@@ -181,7 +190,11 @@ if (source == null) {
       Boxes.getTransactions().put(tx.id, tx);
     }
 
-    _showSnackBar(isEditing ? "Transaction Updated!" : "Transaction Saved!");
+    _showSnackBar(
+      isEditing && !widget.isSmsTransaction
+          ? "Transaction Updated!"
+          : "Transaction Saved!",
+    );
     Navigator.pop(context);
   }
 
@@ -227,13 +240,17 @@ if (source == null) {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(isEditing ? "Edit Transaction" : "Add Transaction"),
+        title: Text(
+          isEditing && !widget.isSmsTransaction
+              ? "Edit Transaction"
+              : "Add Transaction",
+        ),
         centerTitle: true,
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _saveTransaction,
         icon: const Icon(Icons.check),
-        label: Text(isEditing ? "Update" : "Save"),
+        label: Text(isEditing && !widget.isSmsTransaction ? "Update" : "Save"),
       ),
       body: GestureDetector(
         behavior: HitTestBehavior.translucent,

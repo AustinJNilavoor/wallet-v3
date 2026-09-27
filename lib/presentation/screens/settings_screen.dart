@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:wallet/presentation/screens/add_category.dart';
-import 'package:wallet/presentation/screens/add_source_screen.dart';   // Ensure correct path
+import 'package:wallet/presentation/screens/add_source_screen.dart';
+import 'package:wallet/presentation/screens/sms_list_screen.dart';
+import 'package:wallet/presentation/screens/sms_mapping_screen.dart'; // Ensure correct path
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -10,8 +12,10 @@ class SettingsScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text("Settings", 
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+        title: const Text(
+          "Settings",
+          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+        ),
         centerTitle: true,
         elevation: 0,
       ),
@@ -43,11 +47,33 @@ class SettingsScreen extends StatelessWidget {
                   MaterialPageRoute(builder: (_) => const AddSourceScreen()),
                 ),
               ),
+              const Divider(indent: 50),
+              _buildSettingItem(
+                icon: Icons.sms_rounded,
+                color: Colors.teal,
+                title: "SMS Messages",
+                subtitle: "View and manage bank transaction SMS",
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SmsListScreen()),
+                ),
+              ),
+              const Divider(indent: 50),
+              _buildSettingItem(
+                icon: Icons.rule_folder_outlined,
+                color: Colors.blue,
+                title: "SMS Mappings",
+                subtitle: 'Automatically map SMS to sources and categories',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SmsMappingScreen()),
+                ),
+              ),
             ],
           ),
-          
+
           const SizedBox(height: 32),
-          
+
           _buildSectionTitle("App Preferences"),
           _buildSettingsCard(
             context,
@@ -75,7 +101,7 @@ class SettingsScreen extends StatelessWidget {
           ),
 
           const SizedBox(height: 32),
-          
+
           // App Version Info
           const Center(
             child: Text(
@@ -94,8 +120,8 @@ class SettingsScreen extends StatelessWidget {
       child: Text(
         title.toUpperCase(),
         style: const TextStyle(
-          fontSize: 13, 
-          fontWeight: FontWeight.bold, 
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
           color: Colors.grey,
           letterSpacing: 1.2,
         ),
@@ -103,7 +129,10 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSettingsCard(BuildContext context, {required List<Widget> children}) {
+  Widget _buildSettingsCard(
+    BuildContext context, {
+    required List<Widget> children,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -113,7 +142,7 @@ class SettingsScreen extends StatelessWidget {
             color: Colors.black.withOpacity(0.04),
             blurRadius: 10,
             offset: const Offset(0, 4),
-          )
+          ),
         ],
       ),
       child: Column(children: children),
