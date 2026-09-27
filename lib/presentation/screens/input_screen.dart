@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
+
 import 'package:wallet/core/boxes.dart';
 import 'package:wallet/core/category_icons.dart';
 import 'package:wallet/core/source_icons.dart';
@@ -14,7 +14,14 @@ import 'package:wallet/presentation/screens/add_source_screen.dart';
 import 'package:wallet/presentation/widgets/amount_feild.dart';
 import 'package:wallet/presentation/widgets/type_selector.dart';
 import 'package:wallet/presentation/widgets/universal_grid_selector.dart';
+import 'package:wallet/services/transaction/transaction_service.dart';
 
+/// Pure UI screen for creating/editing a transaction by hand.
+///
+/// This screen does not know how balances are calculated — it just
+/// collects the fields and hands them to [TransactionService]. That's
+/// what lets an SMS-import flow (or anything else) reuse the exact
+/// same create/edit logic without going through this widget.
 class InputScreen extends StatefulWidget {
   final Transaction? editTransaction;
 
@@ -25,195 +32,121 @@ class InputScreen extends StatefulWidget {
 }
 
 class _InputScreenState extends State<InputScreen> {
-  final formKey = GlobalKey<FormState>();
-  final DateFormat _dateFormat = DateFormat('EEE, dd MMM yyyy');
+  final _formKey = GlobalKey<FormState>();
+  final _dateFormat = DateFormat('EEE, dd MMM yyyy');
+  final _transactionService = TransactionService();
 
-  late TextEditingController amountController;
-  late TextEditingController notesController;
+  late final TextEditingController _amountController;
+  late final TextEditingController _notesController;
 
-  TransactionType selectedType = TransactionType.expense;
+  TransactionType _selectedType = TransactionType.expense;
+  Category? _selectedCategory;
+  Source? _selectedSource;
+  Source? _transferDestSource;
+  DateTime _selectedDate = DateTime.now();
 
-  Category? selectedCategory;
-  Source? selectedSource;
-  Source? transferDestSource;
+  bool _isSaving = false;
 
-  DateTime selectedDate = DateTime.now();
-
-  bool get isEditing => widget.editTransaction != null;
+  bool get _isEditing => widget.editTransaction != null;
 
   @override
   void initState() {
     super.initState();
 
-    amountController = TextEditingController();
-    notesController = TextEditingController();
+    final tx = widget.editTransaction;
 
-    if (widget.editTransaction != null) {
-      final tx = widget.editTransaction!;
+    _amountController = TextEditingController(text: tx?.amount.toString() ?? '');
+    _notesController = TextEditingController(text: tx?.note ?? '');
 
-      amountController.text = tx.amount.toString();
-      notesController.text = tx.note;
-      selectedDate = tx.createdDate;
-      selectedType = tx.type;
-
-      selectedCategory = tx.category;
-      selectedSource = tx.source;
-      transferDestSource = tx.destinationSource;
+    if (tx != null) {
+      _selectedDate = tx.createdDate;
+      _selectedType = tx.type;
+      _selectedCategory = tx.category;
+      _selectedSource = tx.source;
+      _transferDestSource = tx.destinationSource;
     }
   }
 
   @override
   void dispose() {
-    amountController.dispose();
-    notesController.dispose();
+    _amountController.dispose();
+    _notesController.dispose();
     super.dispose();
   }
+
+  // ---------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
-      initialDate: selectedDate,
+      initialDate: _selectedDate,
       firstDate: DateTime(2020),
       lastDate: DateTime.now(),
     );
-
-    if (picked != null) {
-      setState(() => selectedDate = picked);
-    }
+    if (picked != null) setState(() => _selectedDate = picked);
   }
 
-  void _saveTransaction() {
-    if (!formKey.currentState!.validate()) return;
-    final now = DateTime.now();
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate() || _isSaving) return;
 
-    // Calculate total amount from potential comma-separated entries
-    final double amount = amountController.text
+    final amount = _amountController.text
         .split(',')
         .map((e) => double.tryParse(e.trim()) ?? 0)
-        .fold(0, (a, b) => a + b);
+        .fold(0.0, (a, b) => a + b);
 
-    final String note = notesController.text.trim();
+    final note = _notesController.text.trim();
+    final isTransfer = _selectedType == TransactionType.transfer;
 
-    // 1. REVERT OLD BALANCE FIRST (If Editing)
-    // We must undo the old transaction's impact before applying the new one.
-    if (isEditing && widget.editTransaction != null) {
-      _revertOldBalance(widget.editTransaction!);
+    if (isTransfer && (_selectedSource == null || _transferDestSource == null)) {
+      _showSnackBar('Select both sources');
+      return;
+    }
+    if (!isTransfer && (_selectedCategory == null || _selectedSource == null)) {
+      _showSnackBar('Select category & source');
+      return;
     }
 
-    // 2. APPLY NEW TRANSACTION LOGIC
-    if (selectedType == TransactionType.transfer) {
-      if (selectedSource == null || transferDestSource == null) {
-        _showSnackBar("Select both sources");
-        return;
+    setState(() => _isSaving = true);
+
+    try {
+      // Undo the old transaction's balance effect before applying the
+      // new one, when editing.
+      if (_isEditing) {
+        await _transactionService.revert(widget.editTransaction!);
       }
 
-      if (selectedSource!.id == transferDestSource!.id) {
-        _showSnackBar("Cannot transfer to same source");
-        return;
-      }
-
-      final tx = Transaction(
-        id: isEditing ? widget.editTransaction!.id : const Uuid().v4(),
-        amount: amount,
-        createdDate: selectedDate,
-        note: note,
-        category: Category(
-          id: 'transfer',
-          name: 'Transfer',
-          iconIndex: 0,
-          colorValue: Colors.blue.toARGB32(),
-        ),
-        source: selectedSource!,
-        destinationSource: transferDestSource!,
-        type: TransactionType.transfer,
-      );
-
-      // Update balances for both accounts in a transfer
-
-      final sourceBox = Boxes.getSources();
-
-      final from = sourceBox.get(selectedSource!.id);
-      final to = sourceBox.get(transferDestSource!.id);
-
-      if (from == null || to == null) return;
-
-      from.balance -= amount;
-      to.balance += amount;
-
-      from.lastUpdated = now;
-      to.lastUpdated = now;
-
-      from.save();
-      to.save();
-      Boxes.getTransactions().put(tx.id, tx);
-    } else {
-      // NORMAL TRANSACTION (Income or Expense)
-      if (selectedCategory == null || selectedSource == null) {
-        _showSnackBar("Select category & source");
-        return;
-      }
-
-      final tx = Transaction(
-        id: isEditing ? widget.editTransaction!.id : const Uuid().v4(),
-        amount: amount,
-        createdDate: selectedDate,
-        note: note,
-        category: selectedCategory!,
-        source: selectedSource!,
-        type: selectedType,
-      );
-
-      final sourceBox = Boxes.getSources();
-      final source = sourceBox.get(selectedSource!.id);
-
-if (source == null) {
-  _showSnackBar("Source not found");
-  return;
-}
-      if (selectedType == TransactionType.income) {
-        source.balance += amount;
+      if (isTransfer) {
+        await _transactionService.createTransfer(
+          id: _isEditing ? widget.editTransaction!.id : null,
+          amount: amount,
+          date: _selectedDate,
+          note: note,
+          fromSourceId: _selectedSource!.id,
+          toSourceId: _transferDestSource!.id,
+        );
       } else {
-        source.balance -= amount;
+        await _transactionService.createSimpleTransaction(
+          id: _isEditing ? widget.editTransaction!.id : null,
+          amount: amount,
+          date: _selectedDate,
+          note: note,
+          category: _selectedCategory!,
+          sourceId: _selectedSource!.id,
+          type: _selectedType,
+        );
       }
 
-      source.lastUpdated = now;
-      source.save();
-      Boxes.getTransactions().put(tx.id, tx);
-    }
-
-    _showSnackBar(isEditing ? "Transaction Updated!" : "Transaction Saved!");
-    Navigator.pop(context);
-  }
-
-  void _revertOldBalance(Transaction oldTx) {
-    final sourceBox = Boxes.getSources();
-    final now = DateTime.now();
-
-    // Fetch fresh instances to ensure we aren't using stale memory references.
-    final source = sourceBox.get(oldTx.source.id);
-    if (source == null) return;
-
-    if (oldTx.type == TransactionType.transfer) {
-      final dest = sourceBox.get(oldTx.destinationSource?.id);
-      if (dest == null) return;
-
-      // Undo the transfer: Add back to sender, subtract from receiver.
-      source.balance += oldTx.amount;
-      dest.balance -= oldTx.amount;
-
-      source.lastUpdated = now;
-      dest.lastUpdated = now;
-      source.save();
-      dest.save();
-    } else {
-      // Undo normal transaction
-      if (oldTx.type == TransactionType.income) {
-        source.balance -= oldTx.amount;
-      } else {
-        source.balance += oldTx.amount;
-      }
-      source.lastUpdated = now;
-      source.save();
+      if (!mounted) return;
+      _showSnackBar(_isEditing ? 'Transaction Updated!' : 'Transaction Saved!');
+      Navigator.pop(context);
+    } on TransactionServiceException catch (e) {
+      _showSnackBar(e.message);
+    } catch (_) {
+      _showSnackBar('Failed to save transaction');
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
   }
 
@@ -221,249 +154,213 @@ if (source == null) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // ---------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
-    final bool isTransfer = selectedType == TransactionType.transfer;
+    final isTransfer = _selectedType == TransactionType.transfer;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(isEditing ? "Edit Transaction" : "Add Transaction"),
+        title: Text(_isEditing ? 'Edit Transaction' : 'Add Transaction'),
         centerTitle: true,
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _saveTransaction,
-        icon: const Icon(Icons.check),
-        label: Text(isEditing ? "Update" : "Save"),
+        onPressed: _isSaving ? null : _save,
+        icon: _isSaving
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.check),
+        label: Text(_isEditing ? 'Update' : 'Save'),
       ),
       body: GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onTap: () {
-          FocusScope.of(context).unfocus();
-        },
+        onTap: () => FocusScope.of(context).unfocus(),
         child: Form(
-          key: formKey,
+          key: _formKey,
           child: ListView(
             padding: const EdgeInsets.only(bottom: 80),
             children: [
-              // const SizedBox(height: 30),
-              AmountField(controller: amountController),
-
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 16,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: InkWell(
-                    onTap: _pickDate,
-                    borderRadius: BorderRadius.circular(12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.calendar_today_outlined,
-                              size: 20,
-                              color: Colors.blue,
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              _dateFormat.format(selectedDate),
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: TypeSelector(
-                  selectedType: selectedType,
-                  onChanged: (t) {
-                    if (isEditing &&
-                        widget.editTransaction?.type ==
-                            TransactionType.transfer) {
-                      _showSnackBar("Transfer cannot be edited");
-                      return;
-                    }
-
-                    setState(() {
-                      selectedType = t;
-                      if (t == TransactionType.transfer) {
-                        selectedCategory = null;
-                      }
-                    });
-                  },
-                ),
-              ),
-
+              AmountField(controller: _amountController),
+              _buildDateTile(),
+              _buildTypeSelector(),
               const SizedBox(height: 24),
-
-              if (isTransfer) ...[
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    "From Source",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                UniversalGridSelector<Source>(
-                  listenable: Boxes.getSources().listenable(),
-                  selectedItem: selectedSource,
-                  labelBuilder: (s) => s.name,
-                  idBuilder: (s) => s.id,
-                  iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
-                  colorBuilder: (s) => Color(s.colorValue),
-                  activeColor: Colors.black87,
-                  enableMoreButton: true,
-                  onSelect: (s) => setState(() => selectedSource = s),
-                  onAdd: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddSourceScreen()),
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    "To Source",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                UniversalGridSelector<Source>(
-                  listenable: Boxes.getSources().listenable(),
-                  selectedItem: transferDestSource,
-                  labelBuilder: (s) => s.name,
-                  idBuilder: (s) => s.id,
-                  iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
-                  colorBuilder: (s) => Color(s.colorValue),
-                  activeColor: Colors.black87,
-                  enableMoreButton: true,
-                  onSelect: (s) => setState(() => transferDestSource = s),
-                  onAdd: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddSourceScreen()),
-                  ),
-                ),
-              ] else ...[
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    "Category",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-
-                UniversalGridSelector<Category>(
-                  listenable: Boxes.getCategories().listenable(),
-                  selectedItem: selectedCategory,
-                  labelBuilder: (c) => c.name,
-                  idBuilder: (c) => c.id,
-                  iconBuilder: (c) => CategoryIcons.icons[c.iconIndex],
-                  colorBuilder: (c) => Color(c.colorValue ?? 0xFF2196F3),
-                  activeColor: Colors.blue.shade700,
-                  onSelect: (c) => setState(() => selectedCategory = c),
-                  onAdd: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const AddCategoryScreen(),
-                    ),
-                  ),
-                ),
-                SizedBox(height: 24),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    "Source",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: Colors.grey,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                UniversalGridSelector<Source>(
-                  listenable: Boxes.getSources().listenable(),
-                  selectedItem: selectedSource,
-                  labelBuilder: (s) => s.name,
-                  idBuilder: (s) => s.id,
-                  iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
-                  colorBuilder: (s) => Color(s.colorValue),
-                  activeColor: Colors.black87,
-                  onSelect: (s) => setState(() => selectedSource = s),
-                  onAdd: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddSourceScreen()),
-                  ),
-                ),
-              ],
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: TextFormField(
-                  textCapitalization: TextCapitalization.sentences,
-                  controller: notesController,
-                  decoration: InputDecoration(
-                    labelText: "Notes (Optional)",
-
-                    filled: true,
-                    fillColor: Colors.grey.shade200.withValues(alpha: 0.5),
-
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(
-                        color: Colors.grey.shade300.withValues(alpha: 1.0),
-                      ),
-                    ),
-
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.blueGrey.shade100),
-                    ),
-
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(
-                        color: Colors.blueGrey.shade300,
-                        width: 2,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              if (isTransfer) ..._buildTransferSection() else ..._buildCategorySourceSection(),
+              _buildNotesField(),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDateTile() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: InkWell(
+          onTap: _pickDate,
+          borderRadius: BorderRadius.circular(12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.calendar_today_outlined, size: 20, color: Colors.blue),
+                  const SizedBox(width: 12),
+                  Text(
+                    _dateFormat.format(_selectedDate),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+              const Icon(Icons.arrow_drop_down, color: Colors.grey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTypeSelector() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: TypeSelector(
+        selectedType: _selectedType,
+        onChanged: (t) {
+          if (_isEditing && widget.editTransaction?.type == TransactionType.transfer) {
+            _showSnackBar('Transfer cannot be edited');
+            return;
+          }
+          setState(() {
+            _selectedType = t;
+            if (t == TransactionType.transfer) _selectedCategory = null;
+          });
+        },
+      ),
+    );
+  }
+
+  List<Widget> _buildTransferSection() {
+    return [
+      _sectionLabel('From Source'),
+      const SizedBox(height: 8),
+      UniversalGridSelector<Source>(
+        listenable: Boxes.getSources().listenable(),
+        selectedItem: _selectedSource,
+        labelBuilder: (s) => s.name,
+        idBuilder: (s) => s.id,
+        iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
+        colorBuilder: (s) => Color(s.colorValue),
+        activeColor: Colors.black87,
+        enableMoreButton: true,
+        onSelect: (s) => setState(() => _selectedSource = s),
+        onAdd: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AddSourceScreen()),
+        ),
+      ),
+      const SizedBox(height: 24),
+      _sectionLabel('To Source'),
+      const SizedBox(height: 8),
+      UniversalGridSelector<Source>(
+        listenable: Boxes.getSources().listenable(),
+        selectedItem: _transferDestSource,
+        labelBuilder: (s) => s.name,
+        idBuilder: (s) => s.id,
+        iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
+        colorBuilder: (s) => Color(s.colorValue),
+        activeColor: Colors.black87,
+        enableMoreButton: true,
+        onSelect: (s) => setState(() => _transferDestSource = s),
+        onAdd: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AddSourceScreen()),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _buildCategorySourceSection() {
+    return [
+      _sectionLabel('Category'),
+      const SizedBox(height: 8),
+      UniversalGridSelector<Category>(
+        listenable: Boxes.getCategories().listenable(),
+        selectedItem: _selectedCategory,
+        labelBuilder: (c) => c.name,
+        idBuilder: (c) => c.id,
+        iconBuilder: (c) => CategoryIcons.icons[c.iconIndex],
+        colorBuilder: (c) => Color(c.colorValue ?? 0xFF2196F3),
+        activeColor: Colors.blue.shade700,
+        onSelect: (c) => setState(() => _selectedCategory = c),
+        onAdd: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AddCategoryScreen()),
+        ),
+      ),
+      const SizedBox(height: 24),
+      _sectionLabel('Source'),
+      const SizedBox(height: 8),
+      UniversalGridSelector<Source>(
+        listenable: Boxes.getSources().listenable(),
+        selectedItem: _selectedSource,
+        labelBuilder: (s) => s.name,
+        idBuilder: (s) => s.id,
+        iconBuilder: (s) => SourceIcons.icons[s.iconIndex],
+        colorBuilder: (s) => Color(s.colorValue),
+        activeColor: Colors.black87,
+        onSelect: (s) => setState(() => _selectedSource = s),
+        onAdd: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AddSourceScreen()),
+        ),
+      ),
+    ];
+  }
+
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Text(
+        text,
+        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.grey),
+      ),
+    );
+  }
+
+  Widget _buildNotesField() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: TextFormField(
+        textCapitalization: TextCapitalization.sentences,
+        controller: _notesController,
+        decoration: InputDecoration(
+          labelText: 'Notes (Optional)',
+          filled: true,
+          fillColor: Colors.grey.shade200.withValues(alpha: 0.5),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.blueGrey.shade100),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.blueGrey.shade300, width: 2),
           ),
         ),
       ),

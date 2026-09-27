@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:wallet/core/sms_hive_boxes.dart';
 import 'package:wallet/data/models/category.dart';
 import 'package:wallet/data/models/source.dart';
 import 'package:wallet/data/models/transaction.dart';
@@ -18,6 +19,7 @@ Future<void> main() async {
   await Hive.openBox<Transaction>('transactions');
   await Hive.openBox<Category>('categories');
   await Hive.openBox<Source>('sources');
+  await SmsHiveBoxes.init();
   runApp(const MyApp());
 }
 
